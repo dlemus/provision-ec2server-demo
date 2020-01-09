@@ -305,6 +305,7 @@
         ttl: 600
         value: "{{ item.public_ip_address }}"
         wait: yes
+        overwrite: yes
       with_items: "{{ ansible_node_facts.instances }}"
 
     - name: Add tower host
