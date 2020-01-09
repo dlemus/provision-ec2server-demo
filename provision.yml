@@ -1,0 +1,321 @@
+---
+- name: Provision a new instance and add to hosts
+  hosts: localhost
+  connection: local
+  gather_facts: no
+  remote_user: student1
+
+  vars:
+    ec2_name_prefix: TRAINING
+    ec2_region: us-east-1
+    ec2_wait: yes
+    #need to circle back and fix this for teardown - sean
+    ec2_az: "{{ec2_region}}a"
+    ec2_subnet: "172.16.0.0/16"
+    ec2_subnet2: "172.17.0.0/16"
+    ssh_port: 22
+
+    ## The default is multivendor, 1 x Cisco, 2 x Arista, 1 x Juniper
+    ##
+    ##   VPC1       VPC2
+    ##  (rtr1)  -   (rtr2)
+    ##    |           |
+    ##  (rtr3)  -   (rtr4)
+    ##
+    control_type: "rhel7"
+    rtr1_type: "cisco"
+    rtr2_type: "arista"
+    rtr3_type: "juniper"
+    rtr4_type: "arista"
+    rhel: "rhel7"
+    # additional info needed by AWS ec2 modules
+    ec2_info:
+      juniper:
+        size: c4.xlarge
+        ami: "{{juniper_ami | default(omit)}}"
+        os: junos
+        username: ec2-user
+        volume:
+          - device_name: /dev/sda1
+            volume_type: io1
+            iops: 1000
+            volume_size: 40
+            delete_on_termination: true
+      cisco:
+        size: t2.medium
+        ami: "{{cisco_ami | default(omit)}}"
+        os: ios
+        username: ec2-user
+      arista:
+        size: t2.medium
+        ami: "{{arista_ami | default(omit)}}"
+        os: eos
+        username: ec2-user
+      checkpoint_mgmt:
+        owners: 679593333241
+        filter: 'Check Point CloudGuard IaaS*PAYG-MGMT*R80.20*'
+        architecture: x86_64
+        size: m5.xlarge
+        ami: "{{ checkpoint_mgmt_ami| default(omit) }}"
+        username: admin
+      checkpoint_gw:
+        owners: 679593333241
+        filter: 'Check Point CloudGuard IaaS GW*PAYG-NGTX*R80.20*'
+        architecture: x86_64
+        size: c5.large
+        ami: "{{ checkpoint_gw_ami| default(omit) }}"
+        username: admin
+      windows_ws:
+        owners: 679593333241
+        filter: 'Windows_Server-2016-English-Full-Base-2019.08.16'
+        size: m5.xlarge
+        ami: "{{ windows_ws_ami| default(omit) }}"
+        username: Administrator
+      # Look for owner 309956199498 to find official Red Hat AMIs
+      rhel7-tower:
+        owners: 309956199498
+        size: t2.medium
+        os_type: linux
+        disk_space: 20
+        architecture: x86_64
+        filter: 'RHEL-7.6_HVM-20190515-x86_64-0-Access2-GP2'
+        username: ec2-user
+      rhel7:
+        owners: 309956199498
+        size: t2.medium
+        os_type: linux
+        disk_space: 20
+        architecture: x86_64
+        filter: 'RHEL-7.6_HVM-20190515-x86_64-0-Access2-GP2'
+        username: ec2-user
+        python_interpreter: '/usr/bin/python'
+      f5node:
+        owners: 679593333241
+        size: t2.large
+        os_type: linux
+        disk_space: 40
+        architecture: x86_64
+        filter: 'F5 Networks Prelicensed Hourly BIGIP-13.1*Good 25MBPS*'
+        username: admin
+      splunk_enterprise:
+        owners: 309956199498
+        size: c4.4xlarge
+        os_type: linux
+        disk_space: 200
+        architecture: x86_64
+        filter: 'RHEL-7.6_HVM-20190515-x86_64-0-Access2-GP2'
+        username: ec2-user
+        python_interpreter: '/usr/bin/python'
+      netapp:
+        owners: 679593333241
+        size: t2.medium
+        os_type: linux
+        disk_space: 10
+        architecture: x86_64
+        filter: 'OnCommand_Cloud_Manager_3.7.0_Marketplace*'
+        username: ec2-user
+      qradar:
+        owners: 324218975267
+        size: t2.2xlarge
+        os_type: linux
+        disk_space: 300
+        architecture: x86_64
+        filter: 'AnsibleSecurity-QRadarCE*'
+        username: ec2-user
+        python_interpreter: '/usr/bin/python'
+
+  tasks:
+    # region where the nodes will live
+    - name: set region
+      set_fact:
+        ec2_region: {{server_region}}
+
+    # name prefix for all the VMs
+    - name: set prefix
+      set_fact:
+        ec2_name_prefix: {{server_name_prefix}}
+
+    - name: grab facts for workshop
+      ec2_instance_facts:
+        region: "{{ ec2_region }}"
+        filters:
+          "tag:Workshop": "{{ec2_name_prefix}}"
+      register: all_workshop_nodes
+
+    - name: Get the VPC ID for {{ ec2_name_prefix }}
+      ec2_vpc_net_facts:
+        filters:
+          "tag:Name": "{{ ec2_name_prefix }}-vpc"
+        region: "{{ ec2_region }}"
+      register: vpc_net_facts
+
+    - name: use set fact for easier variables
+      set_fact:
+        ec2_vpc_id: "{{vpc_net_facts.vpcs[0].id}}"
+        ec2_security_group: "{{ ec2_name_prefix }}-insecure_all"
+      when: vpc_net_facts.vpcs|length > 0 and ec2_security_group is undefined
+
+    - name: grab route information for {{ ec2_name_prefix }} on {{ ec2_region }}
+      ec2_vpc_route_table_facts:
+        region: "{{ ec2_region }}"
+        filters:
+          vpc_id: "{{ec2_vpc_id}}"
+      register: route_table_facts
+      when: vpc_net_facts.vpcs|length > 0
+
+    - name: set keys for instance creation dynamically since key was not supplied by user
+      set_fact:
+        ec2_key_name: "{{ ec2_name_prefix }}-key"
+
+    # ------------
+
+    - name: find ami for ansible control node
+      ec2_ami_facts:
+        region: "{{ ec2_region }}"
+        owners: "{{ ec2_info[control_type].owners }}"
+        filters:
+          name: "{{ ec2_info[control_type].filter }}"
+          architecture: "{{ ec2_info[control_type].architecture }}"
+      register: amis
+
+    - name: save ami for ansible control node
+      set_fact:
+        ansible_control_node_ami: >
+          {{ amis.images | selectattr('name', 'defined') | sort(attribute='creation_date') | last }}
+
+    - ec2_vpc_subnet_facts:
+        region: "{{ ec2_region }}"
+        filters:
+          vpc-id: "{{ ec2_vpc_id }}"
+      register: subnet_facts
+
+    - set_fact:
+        subnet_ids: "{{ subnet_facts.subnets|map(attribute='id')|list }}"
+
+    - set_fact:
+        ec2_vpc_subnet_id: "{{ subnet_ids[0] }}"
+
+    - name: Create EC2 instances for ansible node (control node)
+      ec2:
+        assign_public_ip: yes
+        key_name: "{{ ec2_name_prefix }}-key"
+        group: "{{ ec2_security_group }}"
+        instance_type: "{{ ec2_info[control_type].size }}"
+        image: "{{ ansible_control_node_ami.image_id }}"
+        region: "{{ ec2_region }}"
+        exact_count: "1"
+        count_tag:
+          Name: "{{ec2_name_prefix}}-provisioned"
+        wait: "{{ ec2_wait }}"
+        vpc_subnet_id: "{{ ec2_vpc_subnet_id }}"
+        volumes:
+          - device_name: /dev/sda1
+            volume_type: gp2
+            volume_size: "{{ ec2_info[control_type].disk_space }}"
+            delete_on_termination: true
+      register: control_output
+
+    - name: Ensure tags are present
+      ec2_tag:
+        region: "{{ ec2_region }}"
+        resource: "{{item.1}}"
+        state: present
+        tags:
+          Name: "{{ ec2_name_prefix }}-provisioned"
+          username: "{{ec2_info[control_type].username}}"
+          short_name: "provisioned"
+          Workshop: "{{ec2_name_prefix}}"
+          Index: "1"
+          Student: "student1"
+          AWS_USERNAME: "dlemus@redhat.com"
+          Info: "AWS_USERNAME that provisioned this->dlemus@redhat.com"
+          Linklight: "This was provisioned through the linklight provisioner"
+          Students: "1"                
+      with_indexed_items:
+        - "{{ control_output.instance_ids }}"
+      when: control_output.instance_ids is not none
+
+    - name: grab facts for control_nodes
+      ec2_instance_facts:
+        region: "{{ ec2_region }}"
+        filters:
+          instance-state-name: running
+          "tag:Name": "{{ec2_name_prefix}}-provisioned"
+      register: ansible_node_facts
+
+    - name: add ansible node to control_nodes and managed_nodes group
+      add_host:
+        name: "{{ item.tags.Name }}"
+        username: "{{ item.tags.Student }}"
+        short_name: "{{ item.tags.short_name }}"
+        ansible_host: "{{ item.public_ip_address }}"
+        ansible_user: "{{ item.tags.username }}"
+        ansible_port: "22"
+        ansible_ssh_private_key_file: "~/.ssh/aws-private.pem"
+        private_ip: "{{item.private_ip_address}}"            
+        groups:
+          - control_nodes
+      with_items: "{{ ansible_node_facts.instances }}"
+
+- name: wait for all nodes to have SSH reachability
+  hosts: control_nodes
+  become: yes
+  gather_facts: no
+  tasks:
+    - name: Wait 400 seconds (using wait_for_connection)
+      wait_for_connection:
+        delay: 0
+        timeout: 400
+
+- name: Configure common options on managed nodes and control nodes
+  hosts: control_nodes
+  gather_facts: no
+  become: yes
+  tasks:
+    - name: latest Apache version installed
+      yum:
+        name: httpd
+        state: latest
+    - name: Apache enabled and running
+      service:
+        name: httpd
+        enabled: true
+        state: started
+    - name: deploy index.html
+      template:
+        src: index.html.j2
+        dest: /var/www/html/index.html
+    - name: apache-restart
+      service:
+        name: httpd
+        state: restarted
+        
+- name: Add hosts
+  hosts: localhost
+  connection: local
+  gather_facts: no
+  
+  tasks:
+    - name: "Provisioned | Create DNS entry for {{server_name}}.{{ec2_name_prefix}}.{{dns_zone}}"
+      route53:
+        state: present
+        zone: "{{dns_zone}}"
+        record: "{{ server_name }}.{{ec2_name_prefix}}.{{dns_zone}}"
+        type: A
+        ttl: 600
+        value: "{{ item.public_ip_address }}"
+        wait: yes
+      with_items: "{{ ansible_node_facts.instances }}"
+
+    - name: Add tower host
+      tower_host:
+        name: "{{ server_name }}.{{ec2_name_prefix}}.{{dns_zone}}"
+        description: "{{server_name}} host"
+        inventory: "SnowDemo Inventory"
+        state: present
+        tower_username: {{tower_username}}
+        tower_password: {{tower_password}}
+        tower_host: "student1.{{ec2_name_prefix}}.{{dns_zone}}"
+        validate_certs: no
+      with_items: "{{ ansible_node_facts.instances }}"
+
