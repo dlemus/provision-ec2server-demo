@@ -128,12 +128,12 @@
     # region where the nodes will live
     - name: set region
       set_fact:
-        ec2_region: {{server_region}}
+        ec2_region: "{{server_region}}"
 
     # name prefix for all the VMs
     - name: set prefix
       set_fact:
-        ec2_name_prefix: {{server_name_prefix}}
+        ec2_name_prefix: "{{server_name_prefix}}"
 
     - name: grab facts for workshop
       ec2_instance_facts:
@@ -313,8 +313,8 @@
         description: "{{server_name}} host"
         inventory: "SnowDemo Inventory"
         state: present
-        tower_username: {{tower_username}}
-        tower_password: {{tower_password}}
+        tower_username: "{{tower_username}}"
+        tower_password: "{{tower_password}}"
         tower_host: "student1.{{ec2_name_prefix}}.{{dns_zone}}"
         validate_certs: no
       with_items: "{{ ansible_node_facts.instances }}"
