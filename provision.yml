@@ -316,7 +316,7 @@
       tower_host:
         name: "{{ server_name }}.{{ec2_name_prefix}}.{{dns_zone}}"
         description: "{{server_name}} host"
-        inventory: "SnowDemo Inventory"
+        inventory: "Workshop Inventory"
         state: present
         tower_username: "{{tower_username}}"
         tower_password: "{{tower_password}}"
