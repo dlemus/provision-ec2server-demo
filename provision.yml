@@ -287,8 +287,8 @@
         dest: /var/www/html/index.html
     - name: copy images
       copy:
-        src: bird.jpg
-        dest: /var/www/html/bird.jpg
+        src: fedora.png
+        dest: /var/www/html/fedora.png
     - name: apache-restart
       service:
         name: httpd
